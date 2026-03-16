@@ -3,6 +3,5 @@ public class BookMyStayApp {
         System.out.println("Welcome to Book My Stay!");
         System.out.println("System: Hotel Booking Management System");
         System.out.println("Version: 1.0");
-
     }
 }
