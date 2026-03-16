@@ -1,5 +1,7 @@
 import java.util.HashMap;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 // --- UC2: Domain Model ---
 abstract class Room {
@@ -14,9 +16,10 @@ abstract class Room {
     }
 
     public String getType() { return type; }
+    public double getPrice() { return price; }
 
     public void displayInfo() {
-        System.out.println("Room Type: " + type + " | Beds: " + beds + " | Price: $" + price);
+        System.out.print("Room Type: " + type + " | Beds: " + beds + " | Price: $" + price);
     }
 }
 
@@ -26,69 +29,76 @@ class SuiteRoom extends Room { public SuiteRoom() { super("Suite", 3, 350.0); } 
 
 // --- UC3: Centralized Room Inventory Management ---
 class RoomInventory {
-    private Map<String, Integer> inventory;
-
-    public RoomInventory() {
-        this.inventory = new HashMap<>();
-    }
+    private Map<String, Integer> inventory = new HashMap<>();
 
     public void addRoomType(String type, int count) {
         inventory.put(type, count);
     }
 
-    // Controlled update: logic for booking or cancelling can be added here later
     public void updateAvailability(String type, int count) {
-        if (inventory.containsKey(type)) {
-            inventory.put(type, count);
-        }
+        if (inventory.containsKey(type)) inventory.put(type, count);
     }
 
     public int getAvailability(String type) {
         return inventory.getOrDefault(type, 0);
     }
+}
 
-    public void displayInventory() {
-        System.out.println("--- Current Room Inventory ---");
-        for (Map.Entry<String, Integer> entry : inventory.entrySet()) {
-            System.out.println(entry.getKey() + " Rooms Available: " + entry.getValue());
+// --- UC4: Room Search & Availability Check (Read-Only Service) ---
+class SearchService {
+    private RoomInventory inventory;
+    private List<Room> roomTemplates;
+
+    public SearchService(RoomInventory inventory, List<Room> roomTemplates) {
+        this.inventory = inventory;
+        this.roomTemplates = roomTemplates;
+    }
+
+    public void searchAvailableRooms() {
+        System.out.println("\n--- Search Results: Available Rooms ---");
+        boolean found = false;
+
+        for (Room room : roomTemplates) {
+            int count = inventory.getAvailability(room.getType());
+
+            if (count > 0) {
+                room.displayInfo();
+                System.out.println(" | Available: " + count);
+                found = true;
+            }
         }
-        System.out.println("------------------------------");
+
+        if (!found) {
+            System.out.println("Sorry, no rooms are currently available.");
+        }
+        System.out.println("---------------------------------------\n");
     }
 }
 
+// --- Main Application ---
 public class BookMyStayApp {
     public static void main(String[] args) {
         // UC1: Welcome Message
-        System.out.println("Welcome to Book My Stay v1.2");
-        System.out.println("----------------------------");
+        System.out.println("Welcome to Book My Stay v1.3");
 
-        // UC3: Initialize Centralized Inventory
+        // UC3: Setup Inventory
         RoomInventory hotelInventory = new RoomInventory();
-
         hotelInventory.addRoomType("Single", 5);
         hotelInventory.addRoomType("Double", 3);
-        hotelInventory.addRoomType("Suite", 1);
+        hotelInventory.addRoomType("Suite", 0); // Setting Suite to 0 to test UC4 filter
 
-        // UC2: Polymorphism with Room Objects
-        Room single = new SingleRoom();
-        Room dual = new DoubleRoom();
-        Room suite = new SuiteRoom();
-        single.displayInfo();
-        System.out.println("Live Inventory: " + hotelInventory.getAvailability(single.getType()));
-        System.out.println();
+        // UC2: Room Objects
+        List<Room> roomTypes = new ArrayList<>();
+        roomTypes.add(new SingleRoom());
+        roomTypes.add(new DoubleRoom());
+        roomTypes.add(new SuiteRoom());
 
-        dual.displayInfo();
-        System.out.println("Live Inventory: " + hotelInventory.getAvailability(dual.getType()));
-        System.out.println();
+        // UC4: Initialize Search Service (Read-Only)
+        SearchService searchService = new SearchService(hotelInventory, roomTypes);
 
-        suite.displayInfo();
-        System.out.println("Live Inventory: " + hotelInventory.getAvailability(suite.getType()));
-        System.out.println();
+        System.out.println("Guest is searching for available rooms...");
+        searchService.searchAvailableRooms();
 
-        System.out.println("Update: One Suite Room Booked...");
-        hotelInventory.updateAvailability("Suite", 0);
-
-        hotelInventory.displayInventory();
-        System.out.println("End of Application Execution.");
+        System.out.println("System Check: Search complete. No inventory was modified.");
     }
 }
