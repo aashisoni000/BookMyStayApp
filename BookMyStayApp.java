@@ -1,120 +1,105 @@
 import java.util.*;
 
-// --- UC9: Custom Exceptions ---
-class InvalidBookingException extends Exception { public InvalidBookingException(String m) { super(m); } }
+// --- UC9 & UC11: Custom Exceptions & Thread-Safe Models ---
 class RoomNotAvailableException extends Exception { public RoomNotAvailableException(String m) { super(m); } }
 
-// --- UC5, UC8 & UC10: Reservation with Cancellation State ---
 class Reservation {
     private String reservationId;
     private String guestName;
     private String roomType;
-    private String allocatedRoomId; // Track which specific ID was given
 
-    public Reservation(String guestName, String roomType) throws InvalidBookingException {
-        if (guestName == null || guestName.isEmpty()) throw new InvalidBookingException("Invalid Guest");
+    public Reservation(String guestName, String roomType) {
         this.reservationId = "RES-" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
         this.guestName = guestName;
         this.roomType = roomType;
     }
-
-    public String getReservationId() { return reservationId; }
+    public String getGuestName() { return guestName; }
     public String getRoomType() { return roomType; }
-    public void setAllocatedRoomId(String id) { this.allocatedRoomId = id; }
-    public String getAllocatedRoomId() { return allocatedRoomId; }
-
     @Override
-    public String toString() { return "[" + reservationId + "] " + guestName + " Room: " + allocatedRoomId; }
+    public String toString() { return "[" + reservationId + "] " + guestName; }
 }
 
-// --- UC3, UC6 & UC10: Inventory with Stack-based Rollback ---
+// --- UC11: Thread-Safe Room Inventory ---
 class RoomInventory {
     private Map<String, Integer> availability = new HashMap<>();
-    // UC10: Stack tracks released Room IDs for reuse (LIFO Rollback)
-    private Map<String, Stack<String>> releasedRooms = new HashMap<>();
-    private Map<String, Set<String>> activeAllocations = new HashMap<>();
+    private Map<String, Set<String>> allocatedRooms = new HashMap<>();
 
     public void addRoomType(String type, int count) {
         availability.put(type, count);
-        releasedRooms.put(type, new Stack<>());
-        activeAllocations.put(type, new HashSet<>());
+        allocatedRooms.put(type, new HashSet<>());
     }
 
-    public String allocateRoom(Reservation res) throws RoomNotAvailableException {
+    // UC11: Synchronized Method to prevent Race Conditions during allocation
+    public synchronized boolean allocateRoom(Reservation res) {
         String type = res.getRoomType();
-        if (availability.getOrDefault(type, 0) <= 0) throw new RoomNotAvailableException("No vacancy");
+        int count = availability.getOrDefault(type, 0);
 
-        String roomId;
-        // UC10: Priority to reused IDs from the Stack
-        if (!releasedRooms.get(type).isEmpty()) {
-            roomId = releasedRooms.get(type).pop();
-        } else {
-            roomId = type.substring(0, 3).toUpperCase() + "-" + (activeAllocations.get(type).size() + 1);
+        if (count > 0) {
+            // Simulate processing delay to expose potential race conditions if not synchronized
+            try { Thread.sleep(10); } catch (InterruptedException e) {}
+
+            String roomId = type.substring(0, 3).toUpperCase() + "-" + (allocatedRooms.get(type).size() + 1);
+            allocatedRooms.get(type).add(roomId);
+            availability.put(type, count - 1);
+
+            System.out.println(Thread.currentThread().getName() + " SUCCESS: " + roomId + " for " + res.getGuestName());
+            return true;
         }
-
-        activeAllocations.get(type).add(roomId);
-        availability.put(type, availability.get(type) - 1);
-        res.setAllocatedRoomId(roomId);
-        return roomId;
+        System.out.println(Thread.currentThread().getName() + " FAILED: No rooms for " + res.getGuestName());
+        return false;
     }
 
-    public void rollbackRoom(Reservation res) {
-        String type = res.getRoomType();
-        String roomId = res.getAllocatedRoomId();
-
-        activeAllocations.get(type).remove(roomId);
-        releasedRooms.get(type).push(roomId); // UC10: Push back to Stack
-        availability.put(type, availability.get(type) + 1); // Inventory Restoration
-
-        System.out.println("ROLLBACK: Room " + roomId + " returned to inventory.");
+    public void displayFinalState() {
+        System.out.println("\n--- Final Inventory State ---");
+        availability.forEach((type, count) -> System.out.println(type + " Remaining: " + count));
     }
 }
 
-// --- UC10: Cancellation Service ---
-class CancellationService {
-    public void cancelBooking(String resId, List<Reservation> history, RoomInventory inventory) {
-        Reservation toCancel = null;
-        for (Reservation r : history) {
-            if (r.getReservationId().equals(resId)) {
-                toCancel = r;
-                break;
-            }
-        }
+// --- UC11: Concurrent Booking Processor ---
+class BookingTask implements Runnable {
+    private RoomInventory inventory;
+    private Reservation reservation;
 
-        if (toCancel != null) {
-            inventory.rollbackRoom(toCancel);
-            history.remove(toCancel);
-            System.out.println("SUCCESS: Cancellation complete for " + resId);
-        } else {
-            System.out.println("ERROR: Reservation " + resId + " not found.");
-        }
+    public BookingTask(RoomInventory inventory, Reservation reservation) {
+        this.inventory = inventory;
+        this.reservation = reservation;
+    }
+
+    @Override
+    public void run() {
+        inventory.allocateRoom(reservation);
     }
 }
 
 // --- Main Application ---
 public class BookMyStayApp {
-    public static void main(String[] args) throws Exception {
-        System.out.println("Book My Stay v1.10 [Cancellation & Rollback Mode]");
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println("Book My Stay v1.11 [Concurrent Mode]");
+        System.out.println("-------------------------------------");
 
+        // Initialize Inventory with limited rooms
         RoomInventory inventory = new RoomInventory();
         inventory.addRoomType("Single", 2);
-        List<Reservation> history = new ArrayList<>();
-        CancellationService cancelService = new CancellationService();
 
-        // 1. Process a Booking
-        Reservation res = new Reservation("Alice", "Single");
-        inventory.allocateRoom(res);
-        history.add(res);
-        System.out.println("Confirmed: " + res);
+        // Create multiple concurrent requests for the same 2 rooms
+        List<Thread> threads = new ArrayList<>();
+        String[] guests = {"Alice", "Bob", "Charlie", "Dave", "Eve"};
 
-        // 2. Perform Cancellation (UC10)
-        System.out.println("\nInitiating Cancellation...");
-        cancelService.cancelBooking(res.getReservationId(), history, inventory);
+        System.out.println("Launching " + guests.length + " concurrent booking threads...");
 
-        // 3. Verify Inventory Restoration
-        System.out.println("\nAttempting re-booking of same room type...");
-        Reservation res2 = new Reservation("Bob", "Single");
-        inventory.allocateRoom(res2);
-        System.out.println("New Booking: " + res2);
+        for (String name : guests) {
+            Reservation res = new Reservation(name, "Single");
+            Thread t = new Thread(new BookingTask(inventory, res), "Thread-" + name);
+            threads.add(t);
+            t.start(); // Start concurrent execution
+        }
+
+        // Wait for all threads to complete (Join)
+        for (Thread t : threads) {
+            t.join();
+        }
+
+        // Verify that exactly 0 rooms remain and no double-booking occurred
+        inventory.displayFinalState();
     }
 }
