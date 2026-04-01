@@ -1,127 +1,120 @@
 import java.util.*;
 
 // --- UC9: Custom Exceptions ---
-class InvalidBookingException extends Exception {
-    public InvalidBookingException(String message) { super(message); }
-}
+class InvalidBookingException extends Exception { public InvalidBookingException(String m) { super(m); } }
+class RoomNotAvailableException extends Exception { public RoomNotAvailableException(String m) { super(m); } }
 
-class RoomNotAvailableException extends Exception {
-    public RoomNotAvailableException(String message) { super(message); }
-}
-
-// --- UC2 & UC7: Models ---
-class Service {
-    private String name;
-    private double cost;
-    public Service(String name, double cost) { this.name = name; this.cost = cost; }
-    public String getName() { return name; }
-    public double getCost() { return cost; }
-}
-
-// --- UC5, UC8 & UC9: Reservation with Validation ---
+// --- UC5, UC8 & UC10: Reservation with Cancellation State ---
 class Reservation {
     private String reservationId;
     private String guestName;
     private String roomType;
+    private String allocatedRoomId; // Track which specific ID was given
 
     public Reservation(String guestName, String roomType) throws InvalidBookingException {
-        // UC9: Input Validation
-        if (guestName == null || guestName.trim().isEmpty()) {
-            throw new InvalidBookingException("Guest name cannot be empty.");
-        }
-        if (roomType == null || roomType.trim().isEmpty()) {
-            throw new InvalidBookingException("Room type must be specified.");
-        }
+        if (guestName == null || guestName.isEmpty()) throw new InvalidBookingException("Invalid Guest");
         this.reservationId = "RES-" + UUID.randomUUID().toString().substring(0, 5).toUpperCase();
         this.guestName = guestName;
         this.roomType = roomType;
     }
 
     public String getReservationId() { return reservationId; }
-    public String getGuestName() { return guestName; }
     public String getRoomType() { return roomType; }
+    public void setAllocatedRoomId(String id) { this.allocatedRoomId = id; }
+    public String getAllocatedRoomId() { return allocatedRoomId; }
 
     @Override
-    public String toString() {
-        return "[" + reservationId + "] Guest: " + guestName + " (" + roomType + ")";
-    }
+    public String toString() { return "[" + reservationId + "] " + guestName + " Room: " + allocatedRoomId; }
 }
 
-// --- UC3, UC6 & UC9: Room Inventory with Guard Clauses ---
+// --- UC3, UC6 & UC10: Inventory with Stack-based Rollback ---
 class RoomInventory {
     private Map<String, Integer> availability = new HashMap<>();
-    private Map<String, Set<String>> allocatedRooms = new HashMap<>();
+    // UC10: Stack tracks released Room IDs for reuse (LIFO Rollback)
+    private Map<String, Stack<String>> releasedRooms = new HashMap<>();
+    private Map<String, Set<String>> activeAllocations = new HashMap<>();
 
     public void addRoomType(String type, int count) {
         availability.put(type, count);
-        allocatedRooms.put(type, new HashSet<>());
+        releasedRooms.put(type, new Stack<>());
+        activeAllocations.put(type, new HashSet<>());
     }
 
-    // UC9: Fail-Fast Design
-    public void validateAndAllocate(Reservation res, BookingHistory history) throws RoomNotAvailableException {
+    public String allocateRoom(Reservation res) throws RoomNotAvailableException {
         String type = res.getRoomType();
+        if (availability.getOrDefault(type, 0) <= 0) throw new RoomNotAvailableException("No vacancy");
 
-        if (!availability.containsKey(type)) {
-            throw new RoomNotAvailableException("Room type '" + type + "' does not exist in our system.");
+        String roomId;
+        // UC10: Priority to reused IDs from the Stack
+        if (!releasedRooms.get(type).isEmpty()) {
+            roomId = releasedRooms.get(type).pop();
+        } else {
+            roomId = type.substring(0, 3).toUpperCase() + "-" + (activeAllocations.get(type).size() + 1);
         }
 
-        int count = availability.get(type);
-        if (count <= 0) {
-            throw new RoomNotAvailableException("No " + type + " rooms left in inventory.");
-        }
+        activeAllocations.get(type).add(roomId);
+        availability.put(type, availability.get(type) - 1);
+        res.setAllocatedRoomId(roomId);
+        return roomId;
+    }
 
-        // Logic only proceeds if validation passes
-        String roomId = type.substring(0, 3).toUpperCase() + "-" + (allocatedRooms.get(type).size() + 1);
-        allocatedRooms.get(type).add(roomId);
-        availability.put(type, count - 1);
+    public void rollbackRoom(Reservation res) {
+        String type = res.getRoomType();
+        String roomId = res.getAllocatedRoomId();
 
-        history.recordConfirmation(res);
-        System.out.println("SUCCESS: " + roomId + " assigned to " + res.getGuestName());
+        activeAllocations.get(type).remove(roomId);
+        releasedRooms.get(type).push(roomId); // UC10: Push back to Stack
+        availability.put(type, availability.get(type) + 1); // Inventory Restoration
+
+        System.out.println("ROLLBACK: Room " + roomId + " returned to inventory.");
     }
 }
 
-// --- UC8: Booking History ---
-class BookingHistory {
-    private List<Reservation> history = new ArrayList<>();
-    public void recordConfirmation(Reservation res) { history.add(res); }
-    public List<Reservation> getAllRecords() { return new ArrayList<>(history); }
+// --- UC10: Cancellation Service ---
+class CancellationService {
+    public void cancelBooking(String resId, List<Reservation> history, RoomInventory inventory) {
+        Reservation toCancel = null;
+        for (Reservation r : history) {
+            if (r.getReservationId().equals(resId)) {
+                toCancel = r;
+                break;
+            }
+        }
+
+        if (toCancel != null) {
+            inventory.rollbackRoom(toCancel);
+            history.remove(toCancel);
+            System.out.println("SUCCESS: Cancellation complete for " + resId);
+        } else {
+            System.out.println("ERROR: Reservation " + resId + " not found.");
+        }
+    }
 }
 
 // --- Main Application ---
 public class BookMyStayApp {
-    public static void main(String[] args) {
-        System.out.println("Welcome to Book My Stay v1.9 [Validation Mode]");
-        System.out.println("----------------------------------------------");
+    public static void main(String[] args) throws Exception {
+        System.out.println("Book My Stay v1.10 [Cancellation & Rollback Mode]");
 
         RoomInventory inventory = new RoomInventory();
-        inventory.addRoomType("Single", 1); // Only ONE room available
-        BookingHistory history = new BookingHistory();
+        inventory.addRoomType("Single", 2);
+        List<Reservation> history = new ArrayList<>();
+        CancellationService cancelService = new CancellationService();
 
-        try {
-            // SCENARIO 1: Valid Booking
-            System.out.println("\nAttempting Valid Booking...");
-            Reservation res1 = new Reservation("Alice", "Single");
-            inventory.validateAndAllocate(res1, history);
+        // 1. Process a Booking
+        Reservation res = new Reservation("Alice", "Single");
+        inventory.allocateRoom(res);
+        history.add(res);
+        System.out.println("Confirmed: " + res);
 
-            // SCENARIO 2: Inventory Exhaustion (UC9 Exception)
-            System.out.println("\nAttempting Over-booking...");
-            Reservation res2 = new Reservation("Bob", "Single");
-            inventory.validateAndAllocate(res2, history);
+        // 2. Perform Cancellation (UC10)
+        System.out.println("\nInitiating Cancellation...");
+        cancelService.cancelBooking(res.getReservationId(), history, inventory);
 
-        } catch (InvalidBookingException | RoomNotAvailableException e) {
-            System.err.println("BOOKING ERROR: " + e.getMessage());
-        }
-
-        try {
-            // SCENARIO 3: Invalid Room Type (UC9 Exception)
-            System.out.println("\nAttempting Invalid Room Type...");
-            Reservation res3 = new Reservation("Charlie", "Penthouse");
-            inventory.validateAndAllocate(res3, history);
-
-        } catch (Exception e) {
-            System.err.println("CRITICAL ERROR: " + e.getMessage());
-        }
-
-        System.out.println("\nSystem remains stable. Total confirmed: " + history.getAllRecords().size());
+        // 3. Verify Inventory Restoration
+        System.out.println("\nAttempting re-booking of same room type...");
+        Reservation res2 = new Reservation("Bob", "Single");
+        inventory.allocateRoom(res2);
+        System.out.println("New Booking: " + res2);
     }
 }
