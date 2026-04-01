@@ -1,39 +1,17 @@
 import java.util.*;
 
-// --- UC2: Domain Model ---
-abstract class Room {
-    private String type;
-    private double price;
-
-    public Room(String type, double price) {
-        this.type = type;
-        this.price = price;
-    }
-
-    public String getType() { return type; }
-    public double getPrice() { return price; } // Added getter for cost calculation
-}
-
-class SingleRoom extends Room { public SingleRoom() { super("Single", 100.0); } }
-class DoubleRoom extends Room { public DoubleRoom() { super("Double", 180.0); } }
-
-// --- UC7: Add-On Service Model ---
+// --- UC2 & UC7: Domain & Service Models ---
 class Service {
     private String name;
     private double cost;
-
-    public Service(String name, double cost) {
-        this.name = name;
-        this.cost = cost;
-    }
-
+    public Service(String name, double cost) { this.name = name; this.cost = cost; }
     public String getName() { return name; }
     public double getCost() { return cost; }
 }
 
-// --- UC5: Reservation Model ---
+// --- UC5 & UC8: Reservation Model with Persistence Mindset ---
 class Reservation {
-    private String reservationId; // UC7: Added unique ID for mapping services
+    private String reservationId;
     private String guestName;
     private String roomType;
 
@@ -49,35 +27,63 @@ class Reservation {
 
     @Override
     public String toString() {
-        return "[" + reservationId + "] Guest: " + guestName + " | Type: " + roomType;
+        return "[" + reservationId + "] Guest: " + guestName + " (" + roomType + ")";
     }
 }
 
 // --- UC7: Add-On Service Manager ---
 class ServiceManager {
-    // Map<ReservationID, List<Services>> - One-to-Many Relationship
     private Map<String, List<Service>> selectedServices = new HashMap<>();
 
-    public void addService(String reservationId, Service service) {
-        selectedServices.computeIfAbsent(reservationId, k -> new ArrayList<>()).add(service);
-        System.out.println("Service Added: " + service.getName() + " to Reservation " + reservationId);
+    public void addService(String resId, Service service) {
+        selectedServices.computeIfAbsent(resId, k -> new ArrayList<>()).add(service);
     }
 
-    public double calculateAdditionalCost(String reservationId) {
-        List<Service> services = selectedServices.getOrDefault(reservationId, Collections.emptyList());
-        return services.stream().mapToDouble(Service::getCost).sum();
-    }
-
-    public void displayServices(String reservationId) {
-        List<Service> services = selectedServices.get(reservationId);
-        if (services != null) {
-            System.out.print(" Services: ");
-            services.forEach(s -> System.out.print(s.getName() + " ($" + s.getCost() + ") "));
-        }
+    public double getTotalServiceCost(String resId) {
+        return selectedServices.getOrDefault(resId, Collections.emptyList())
+                .stream().mapToDouble(Service::getCost).sum();
     }
 }
 
-// --- UC3 & UC6: Room Inventory & Allocation Service ---
+// --- UC8: Booking History (Persistence Layer) ---
+class BookingHistory {
+    // List preserves chronological insertion order for auditing
+    private List<Reservation> history = new ArrayList<>();
+
+    public void recordConfirmation(Reservation res) {
+        history.add(res);
+        System.out.println("HISTORY: Recorded " + res.getReservationId());
+    }
+
+    public List<Reservation> getAllRecords() {
+        return new ArrayList<>(history); // Return copy to protect internal state
+    }
+}
+
+// --- UC8: Booking Report Service (Operational Visibility) ---
+class ReportingService {
+    public void generateSummary(BookingHistory history, ServiceManager sm) {
+        System.out.println("\n--- ADMINISTRATIVE BOOKING REPORT ---");
+        List<Reservation> records = history.getAllRecords();
+
+        if (records.isEmpty()) {
+            System.out.println("No confirmed bookings found.");
+            return;
+        }
+
+        double totalRevenue = 0;
+        for (Reservation res : records) {
+            double serviceCost = sm.getTotalServiceCost(res.getReservationId());
+            totalRevenue += serviceCost; // Simplification: tracking add-on revenue
+            System.out.println(res + " | Add-ons: $" + serviceCost);
+        }
+        System.out.println("-------------------------------------");
+        System.out.println("Total Bookings: " + records.size());
+        System.out.println("Total Add-on Revenue: $" + totalRevenue);
+    }
+}
+
+// --- UC3 & UC6: Room Inventory & Allocation ---
 class RoomInventory {
     private Map<String, Integer> availability = new HashMap<>();
     private Map<String, Set<String>> allocatedRooms = new HashMap<>();
@@ -87,75 +93,49 @@ class RoomInventory {
         allocatedRooms.put(type, new HashSet<>());
     }
 
-    public int getAvailability(String type) {
-        return availability.getOrDefault(type, 0);
-    }
+    public boolean allocateRoom(Reservation res, BookingHistory history) {
+        String type = res.getRoomType();
+        int count = availability.getOrDefault(type, 0);
 
-    public boolean allocateRoom(String type, String guestName) {
-        int count = getAvailability(type);
         if (count > 0) {
             String roomId = type.substring(0, 3).toUpperCase() + "-" + (allocatedRooms.get(type).size() + 1);
             allocatedRooms.get(type).add(roomId);
             availability.put(type, count - 1);
-            System.out.println("SUCCESS: Room " + roomId + " allocated to " + guestName);
+
+            // UC8: Transition from "Active Process" to "Historical Record"
+            history.recordConfirmation(res);
             return true;
         }
-        System.out.println("FAILED: No availability for " + type);
         return false;
     }
-
-    public void displayFinalState(ServiceManager serviceManager, List<Reservation> processed) {
-        System.out.println("\n--- Final System State ---");
-        processed.forEach(res -> {
-            double extra = serviceManager.calculateAdditionalCost(res.getReservationId());
-            System.out.print(res);
-            serviceManager.displayServices(res.getReservationId());
-            System.out.println(" | Extra Cost: $" + extra);
-        });
-    }
-}
-
-class BookingRequestQueue {
-    private Queue<Reservation> queue = new LinkedList<>();
-    public void addRequest(Reservation res) { queue.add(res); }
-    public Reservation nextRequest() { return queue.poll(); }
-    public boolean isEmpty() { return queue.isEmpty(); }
 }
 
 // --- Main Application ---
 public class BookMyStayApp {
     public static void main(String[] args) {
-        System.out.println("Welcome to Book My Stay v1.7 [Add-On Service Mode]");
-        System.out.println("----------------------------------------------");
+        System.out.println("Book My Stay v1.8 [Reporting & History Mode]");
 
+        // Initialize Components
         RoomInventory inventory = new RoomInventory();
-        inventory.addRoomType("Single", 5);
+        inventory.addRoomType("Single", 2);
 
         ServiceManager serviceManager = new ServiceManager();
-        List<Reservation> processedReservations = new ArrayList<>();
+        BookingHistory history = new BookingHistory();
+        ReportingService reporter = new ReportingService();
 
-        // 1. Create Reservations
+        // 1. Setup Reservations & Services
         Reservation res1 = new Reservation("Alice", "Single");
+        serviceManager.addService(res1.getReservationId(), new Service("WiFi", 10));
+
         Reservation res2 = new Reservation("Bob", "Single");
+        serviceManager.addService(res2.getReservationId(), new Service("Breakfast", 20));
 
-        // 2. Add Services (UC7)
-        serviceManager.addService(res1.getReservationId(), new Service("WiFi", 10.0));
-        serviceManager.addService(res1.getReservationId(), new Service("Breakfast", 25.0));
-        serviceManager.addService(res2.getReservationId(), new Service("Late Checkout", 15.0));
+        // 2. Process Allocations
+        System.out.println("\nProcessing Bookings...");
+        inventory.allocateRoom(res1, history);
+        inventory.allocateRoom(res2, history);
 
-        // 3. Process Logic
-        BookingRequestQueue requestQueue = new BookingRequestQueue();
-        requestQueue.addRequest(res1);
-        requestQueue.addRequest(res2);
-
-        while (!requestQueue.isEmpty()) {
-            Reservation current = requestQueue.nextRequest();
-            if(inventory.allocateRoom(current.getRoomType(), current.getGuestName())) {
-                processedReservations.add(current);
-            }
-        }
-
-        // 4. Final Summary showing total costs
-        inventory.displayFinalState(serviceManager, processedReservations);
+        // 3. Generate Report (UC8)
+        reporter.generateSummary(history, serviceManager);
     }
 }
